@@ -1,10 +1,10 @@
 ### pytorch-yolo3
-Convert https://pjreddie.com/darknet/yolo/ into pytorch. Currently this repository works on Python 3.6.1  + pytorch 0.3.1.post3
+Convert https://pjreddie.com/darknet/yolo/ into pytorch. Currently this repository works on Python 3.6.1  + pytorch 0.4
 
-This python3 version is merged from https://github.com/Swall0w/pytorch-yolo3
+This python3 version is merged from https://github.com/Swall0w/pytorch-yolo3 and https://github.com/marvis/pytorch-yolo3
 
 ### Todos
-- [x] make detect.py works
+- Change train.py to enable Windows multiprocessing
 
 ---
 #### Detection Using A Pre-Trained Model
@@ -130,6 +130,3 @@ bicycle: 0.999972
 save plot results to predictions.jpg
 ```
 ![predictions](data/predictions.jpg)
-
-### Train on COCO
-comming soon ...
