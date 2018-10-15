@@ -12,7 +12,9 @@ from image import *
 
 class listDataset(Dataset):
 
-    def __init__(self, root, shape=None, shuffle=True, transform=None, target_transform=None, train=False, seen=0, batch_size=64, num_workers=4):
+    def __init__(self, root, shape=None, shuffle=True, transform=None,
+                 target_transform=None, train=False, seen=0,
+                 batch_size=64, num_workers=4):
        with open(root, 'r') as file:
            self.lines = file.readlines()
 
@@ -55,7 +57,7 @@ class listDataset(Dataset):
         if self.train:
             jitter = 0.2
             hue = 0.1
-            saturation = 1.5 
+            saturation = 1.5
             exposure = 1.5
 
             img, label = load_data_detection(imgpath, self.shape, jitter, hue, saturation, exposure)
@@ -64,7 +66,7 @@ class listDataset(Dataset):
             img = Image.open(imgpath).convert('RGB')
             if self.shape:
                 img = img.resize(self.shape)
-    
+
             labpath = imgpath.replace('images', 'labels').replace('JPEGImages', 'labels').replace('.jpg', '.txt').replace('.png','.txt')
             label = torch.zeros(50*5)
             #if os.path.getsize(labpath):
