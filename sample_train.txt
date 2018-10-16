@@ -1,0 +1,8 @@
+dataset/images/000001.jpg
+dataset/images/000002.jpg
+dataset/images/000003.jpg
+dataset/images/000004.jpg
+dataset/images/000005.jpg
+dataset/images/000006.jpg
+dataset/images/000007.jpg
+dataset/images/000008.jpg
