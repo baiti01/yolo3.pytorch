@@ -94,7 +94,7 @@ class Darknet(nn.Module):
         self.header = torch.IntTensor([0,0,0,0])
         self.seen = 0
 
-    def forward(self, x):
+    def forward(self, x, target):
         ind = -2
         self.loss = None
         outputs = dict()
@@ -143,8 +143,9 @@ class Darknet(nn.Module):
                 outputs[ind] = None
             elif block['type'] == 'yolo':
                 if self.training:
-                    yolo_inds.append(ind)
-                    pass
+                    loss += self.models[ind](x, target)
+#                    yolo_inds.append(ind)
+#                    pass
                 else:
                     boxes = self.models[ind](x)
                     out_boxes.append(boxes)
@@ -153,7 +154,8 @@ class Darknet(nn.Module):
             else:
                 print('unknown type %s' % (block['type']))
         if self.training:
-            return [outputs[ind-1] for x in yolo_inds]
+            return loss
+#            return [outputs[x-1] for x in yolo_inds]
         else:
             return out_boxes
 
@@ -162,7 +164,7 @@ class Darknet(nn.Module):
 
     def create_network(self, blocks):
         models = nn.ModuleList()
-    
+
         prev_filters = 3
         out_filters =[]
         prev_stride = 1
@@ -297,7 +299,12 @@ class Darknet(nn.Module):
                 anchors = block['anchors'].split(',')
                 anchor_mask = block['mask'].split(',')
                 yolo_layer.anchor_mask = [int(i) for i in anchor_mask]
-                yolo_layer.anchors = [float(i) for i in anchors]
+                yolo_layer.anchors = []
+                for i,a in enumerate(anchors):
+                    if i%2 ==0:
+                        yolo_layer.anchors.append(float(a)/int(blocks[0]['width']))
+                    else:
+                        yolo_layer.anchors.append(float(a)/int(blocks[0]['height']))
                 yolo_layer.num_classes = int(block['classes'])
                 yolo_layer.num_anchors = int(block['num'])
                 yolo_layer.anchor_step = len(yolo_layer.anchors) // yolo_layer.num_anchors
@@ -311,7 +318,7 @@ class Darknet(nn.Module):
                 models.append(yolo_layer)
             else:
                 print('unknown type %s' % (block['type']))
-    
+
         return models
 
     def load_weights(self, weightfile):

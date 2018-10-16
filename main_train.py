@@ -37,9 +37,9 @@ def truths_length(truths):
 def test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps):
     model.eval()
 
-    num_classes = model.num_classes
-    anchors     = model.anchors
-    num_anchors = model.num_anchors
+    num_classes = model.models[-1].num_classes
+    anchors     = model.models[-1].anchors
+    num_anchors = model.models[-1].num_anchors
     total       = 0.0
     proposals   = 0.0
     correct     = 0.0
@@ -137,11 +137,12 @@ def train(epoch, model, region_loss, train_loader, optimizer, use_cuda,
         optimizer.zero_grad()
 
         t5 = time.time()
-        output = model(data)
+        #output = model(data, target)
+        loss = model(data, target)
 
         t6 = time.time()
         region_loss.seen = region_loss.seen + data.size(0)
-        loss = region_loss(output, target)
+        #loss = region_loss(output, target)
 
         t7 = time.time()
         loss.backward()
@@ -255,7 +256,7 @@ def main():
     # Initiate data loaders
     train_loader = torch.utils.data.DataLoader(
         dataset.listDataset(trainlist, shape=(init_width, init_height),
-                       shuffle=True,
+                       shuffle=False,
                        transform=transforms.Compose([
                            transforms.ToTensor(),
                        ]),
@@ -301,14 +302,14 @@ def main():
     evaluate = False
     if evaluate:
         utils.logging('evaluating ...')
-        test(0, model, test_loader, conf_thresh, nms_thresh, iou_thresh, eps)
+        test(0, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps)
     else:
         for epoch in range(init_epoch, int(max_epochs)):
             processed_batches = train(epoch, model, region_loss, train_loader,
                                       optimizer, use_cuda, processed_batches,
                                       learning_rate, steps, scales, batch_size,
                                       save_interval, backupdir)
-            test(epoch, model, test_loader, conf_thresh, nms_thresh, iou_thresh, eps)
+            test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps)
 
 
 if __name__ == '__main__':
