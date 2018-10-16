@@ -99,6 +99,8 @@ class Darknet(nn.Module):
         self.loss = None
         outputs = dict()
         out_boxes = []
+        loss = 0.0
+        yolo_inds = []
         for block in self.blocks:
             ind = ind + 1
             #if ind > 0:
@@ -141,6 +143,7 @@ class Darknet(nn.Module):
                 outputs[ind] = None
             elif block['type'] == 'yolo':
                 if self.training:
+                    yolo_inds.append(ind)
                     pass
                 else:
                     boxes = self.models[ind](x)
@@ -150,7 +153,7 @@ class Darknet(nn.Module):
             else:
                 print('unknown type %s' % (block['type']))
         if self.training:
-            return loss
+            return [outputs[ind-1] for x in yolo_inds]
         else:
             return out_boxes
 

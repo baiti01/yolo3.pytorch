@@ -17,13 +17,14 @@ from torchvision import transforms
 
 from darknet import Darknet
 import utils
+import cfg
 import dataset
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Yolo v3 Object Detector with PyTorch')
     parser.add_argument('data', type=str, help='Path to the .data file')
     parser.add_argument('cfg', type=str, help='Path to the .cfg file')
-    parser.add_argument('weight', type=str, help='Path to the .weights file')
+    parser.add_argument('weights', type=str, help='Path to the .weights file')
     parser.add_argument('--save_freq', type=int, default=2)
     args = parser.parse_args()
     return args
@@ -127,7 +128,7 @@ def train(epoch, model, region_loss, train_loader, optimizer, use_cuda,
         processed_batches = processed_batches + 1
 
         t3 = time.time()
-        data, target = torch.tensor(data, requires_grad=True), torch.tensor(target)
+        data, target = torch.tensor(data, requires_grad=True), torch.tensor(target, dtype=torch.float32)
         if use_cuda:
             data = data.cuda()
             #target = target.cuda()
@@ -139,7 +140,7 @@ def train(epoch, model, region_loss, train_loader, optimizer, use_cuda,
         output = model(data)
 
         t6 = time.time()
-        region_loss.seen = region_loss.seen + data.data.size(0)
+        region_loss.seen = region_loss.seen + data.size(0)
         loss = region_loss(output, target)
 
         t7 = time.time()
@@ -189,7 +190,7 @@ def main():
     weightfile    = args.weights
 
     data_options  = utils.read_data_cfg(datacfg)
-    net_options   = utils.parse_cfg(cfgfile)[0]
+    net_options   = cfg.parse_cfg(cfgfile)[0]
 
     trainlist     = data_options['train']
     testlist      = data_options['valid']
@@ -234,10 +235,10 @@ def main():
 
     model       = Darknet(cfgfile)
 
-    if ngpus > 1:
-        model = model.module
-    else:
-        model = model
+#    if ngpus > 1:
+#        model = model.module
+#    else:
+#        model = model
 
     region_loss = model.loss
 
