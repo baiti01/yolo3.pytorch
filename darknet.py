@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from region_loss import RegionLoss
-from yolo_layer import YoloLayer
+from yolo_layer import YoloLayer, YoloLayer2
 from cfg import *
 #from layers.batchnorm.bn import BN2d
 
@@ -94,7 +94,7 @@ class Darknet(nn.Module):
         self.header = torch.IntTensor([0,0,0,0])
         self.seen = 0
 
-    def forward(self, x, target):
+    def forward(self, x, target=None):
         ind = -2
         self.loss = None
         outputs = dict()
@@ -295,27 +295,47 @@ class Darknet(nn.Module):
                 out_strides.append(prev_stride)
                 models.append(loss)
             elif block['type'] == 'yolo':
-                yolo_layer = YoloLayer()
                 anchors = block['anchors'].split(',')
                 anchor_mask = block['mask'].split(',')
-                yolo_layer.anchor_mask = [int(i) for i in anchor_mask]
-                yolo_layer.anchors = []
-                for i,a in enumerate(anchors):
-                    if i%2 ==0:
-                        yolo_layer.anchors.append(float(a)/int(blocks[0]['width']))
-                    else:
-                        yolo_layer.anchors.append(float(a)/int(blocks[0]['height']))
-                yolo_layer.num_classes = int(block['classes'])
-                yolo_layer.num_anchors = int(block['num'])
-                yolo_layer.anchor_step = len(yolo_layer.anchors) // yolo_layer.num_anchors
-                yolo_layer.stride = prev_stride
-                #yolo_layer.object_scale = float(block['object_scale'])
-                #yolo_layer.noobject_scale = float(block['noobject_scale'])
-                #yolo_layer.class_scale = float(block['class_scale'])
-                #yolo_layer.coord_scale = float(block['coord_scale'])
+                anchor_mask = [int(i) for i in anchor_mask]
+                masked_anchors = []
+                for am in anchor_mask:
+                    masked_anchors.append(float(anchors[2*am]))
+                    masked_anchors.append(float(anchors[2*am + 1]))
+                
+                
+                
+                yolo_layer = YoloLayer2(int(block['classes']), anchors, 
+                                        masked_anchors, 90,
+                                        int(blocks[0]['width']),
+                                        int(blocks[0]['height']))
+                #yolo_layer = YoloLayer2()
+                
                 out_filters.append(prev_filters)
                 out_strides.append(prev_stride)
                 models.append(yolo_layer)
+#            elif block['type'] == 'yolo':
+#                yolo_layer = YoloLayer()
+#                anchors = block['anchors'].split(',')
+#                anchor_mask = block['mask'].split(',')
+#                yolo_layer.anchor_mask = [int(i) for i in anchor_mask]
+#                yolo_layer.anchors = []
+#                for i,a in enumerate(anchors):
+#                    if i%2 ==0:
+#                        yolo_layer.anchors.append(float(a)/int(blocks[0]['width']))
+#                    else:
+#                        yolo_layer.anchors.append(float(a)/int(blocks[0]['height']))
+#                yolo_layer.num_classes = int(block['classes'])
+#                yolo_layer.num_anchors = int(block['num'])
+#                yolo_layer.anchor_step = len(yolo_layer.anchors) // yolo_layer.num_anchors
+#                yolo_layer.stride = prev_stride
+#                #yolo_layer.object_scale = float(block['object_scale'])
+#                #yolo_layer.noobject_scale = float(block['noobject_scale'])
+#                #yolo_layer.class_scale = float(block['class_scale'])
+#                #yolo_layer.coord_scale = float(block['coord_scale'])
+#                out_filters.append(prev_filters)
+#                out_strides.append(prev_stride)
+#                models.append(yolo_layer)
             else:
                 print('unknown type %s' % (block['type']))
 

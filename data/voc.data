@@ -1,4 +1,4 @@
-train  = 0712_trainval.txt
+train  = sample_train.txt
 valid  = 2007_test.txt
 names = data/voc.names
 backup = backup

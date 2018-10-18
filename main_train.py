@@ -131,7 +131,7 @@ def train(epoch, model, region_loss, train_loader, optimizer, use_cuda,
         data, target = torch.tensor(data, requires_grad=True), torch.tensor(target, dtype=torch.float32)
         if use_cuda:
             data = data.cuda()
-            #target = target.cuda()
+            target = target.cuda()
 
         t4 = time.time()
         optimizer.zero_grad()

@@ -19,6 +19,27 @@ def softmax(x):
     x = x/x.sum()
     return x
 
+def overlap(x1, w1, x2, w2):
+    l1 = x1 - w1/2
+    l2 = x2 - w2/2
+    left = l1 if l1 > l2 else l2
+    r1 = x1 + w1/2
+    r2 = x2 + w2/2
+    right = r1 if r1 < r2 else r2
+    return right - left
+
+def intersection(box1, box2):
+    w = overlap(box1[0], box1[2], box2[0], box2[2])
+    h = overlap(box1[1], box1[3], box2[1], box2[3])
+    if w < 0 or h < 0:
+        return 0
+    return w*h
+    
+def union(box1, box2):
+    return box1[2]*box1[3] + box2[2]*box2[3] - intersection(box1, box2)
+
+def iou(box1, box2):
+    return intersection(box1,box2)/union(box1,box2)
 
 def bbox_iou(box1, box2, x1y1x2y2=True):
     if x1y1x2y2:
