@@ -157,7 +157,7 @@ class Darknet(nn.Module):
             return loss
 #            return [outputs[x-1] for x in yolo_inds]
         else:
-            return out_boxes
+            return torch.cat(out_boxes,1)
 
     def print_network(self):
         print_cfg(self.blocks)
@@ -296,17 +296,18 @@ class Darknet(nn.Module):
                 models.append(loss)
             elif block['type'] == 'yolo':
                 anchors = block['anchors'].split(',')
+                anchors = [float(i) for i in anchors]
                 anchor_mask = block['mask'].split(',')
                 anchor_mask = [int(i) for i in anchor_mask]
-                masked_anchors = []
-                for am in anchor_mask:
-                    masked_anchors.append(float(anchors[2*am]))
-                    masked_anchors.append(float(anchors[2*am + 1]))
+#                masked_anchors = []
+#                for am in anchor_mask:
+#                    masked_anchors.append(anchors[2*am])
+#                    masked_anchors.append(anchors[2*am + 1])
                 
                 
                 
                 yolo_layer = YoloLayer2(int(block['classes']), anchors, 
-                                        masked_anchors, 90,
+                                        anchor_mask, 90,
                                         int(blocks[0]['width']),
                                         int(blocks[0]['height']))
                 #yolo_layer = YoloLayer2()

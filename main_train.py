@@ -49,11 +49,12 @@ def test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thres
         data = torch.tensor(data)
         if use_cuda:
             data = data.cuda()
-        output = model(data).data
-        all_boxes = utils.get_region_boxes(output, conf_thresh, num_classes,
-                                           anchors, num_anchors)
+        output = model(data)
+#        all_boxes = utils.get_region_boxes(output, conf_thresh, num_classes,
+#                                           anchors, num_anchors)
         for i in range(output.size(0)):
-            boxes = all_boxes[i]
+            #boxes = all_boxes[i]
+            boxes = output[i]
             boxes = utils.nms(boxes, nms_thresh)
             truths = target[i].view(-1, 5)
             num_gts = truths_length(truths)
@@ -81,7 +82,8 @@ def test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thres
     fscore = 2.0*precision*recall/(precision+recall+eps)
     utils.logging("precision: %f, recall: %f, fscore: %f" % (precision, recall, fscore))
 
-
+def test2():
+    pass
 
 def adjust_learning_rate(optimizer, batch, learning_rate, steps, scales, batch_size):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -139,7 +141,9 @@ def train(epoch, model, region_loss, train_loader, optimizer, use_cuda,
         t5 = time.time()
         #output = model(data, target)
         loss = model(data, target)
-
+        
+        print("Epoch {}, loss {}".format(epoch, loss))
+        
         t6 = time.time()
         region_loss.seen = region_loss.seen + data.size(0)
         #loss = region_loss(output, target)
@@ -235,11 +239,6 @@ def main():
         torch.cuda.manual_seed(seed)
 
     model       = Darknet(cfgfile)
-
-#    if ngpus > 1:
-#        model = model.module
-#    else:
-#        model = model
 
     region_loss = model.loss
 

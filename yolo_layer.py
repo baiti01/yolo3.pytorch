@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import utils
+import numpy as np
 
 def build_targets(pred_boxes, target, anchors, num_anchors, num_classes, nH, nW, noobject_scale, object_scale, sil_thresh, seen):
     nB = target.size(0)
@@ -232,14 +233,22 @@ class YoloLayer2(nn.Module):
         # anchors and masked anchors
         self.num_anchors = int(len(anchors)/2)
         self.anchors = anchors
-        self.mask_size = int(len(masked_anchors)/2)
+
+        self.masked_anchor_inds = masked_anchors
+        masked_anchors = []
+        for i in self.masked_anchor_inds:
+            masked_anchors.append(self.anchors[2*i])
+            masked_anchors.append(self.anchors[2*i+1])
         self.masked_anchors = masked_anchors
+        self.mask_size = int(len(masked_anchors)/2)
         
         self.max_boxes = max_boxes
         #self.truths = max_boxes * (4 + 1) probably dont need it
         #self.all_losses = self.batch_size * self.lwidth * self.lheight * self.lfilters # maximum number of losses to pay attention to, for a detection layer
-    
-    
+        self.cls_loss = nn.BCELoss(size_average=False, reduce=False)
+        self.l1_loss = nn.L1Loss(size_average=False, reduce=False)
+        
+        
     
     def forward(self, input, targets=None):
         # layer sizes
@@ -261,42 +270,11 @@ class YoloLayer2(nn.Module):
         conf = torch.sigmoid(prediction[..., 4])
         pred_cls = torch.sigmoid(prediction[..., 5:])
         
-        yolo_boxes = self.get_yolo_boxes(x, y, width, height, 
-                                         self.net_width, self.net_height,
-                                         self.masked_anchors)
         if targets is not None:
-            targets = targets.view(batch_size, -1, 5)
-#            targets = targets.permute(0, 2, 1)
-            
-#            the_ious = torch.zeros(batch_size, self.mask_size, lheight, lwidth)
-#            loss_objectness = torch.zeros(batch_size, self.mask_size, lheight, lwidth)
-#            for b in range(batch_size):
-#                for a in range(self.mask_size):
-#                    for j in range(lheight):
-#                        for i in range(lwidth):
-#                            pred = self.get_yolo_box(i, j,
-#                                                     x[b][a][j][i],
-#                                                     y[b][a][j][i],
-#                                                     width[b][a][j][i],
-#                                                     height[b][a][j][i],
-#                                                     lwidth, lheight,
-#                                                     self.net_width, self.net_height,
-#                                                     self.masked_anchors[a],
-#                                                     self.masked_anchors[a+1])
-#                            best_iou = 0
-#                            for t in targets[b]:
-#                                if t.sum() == 0: 
-#                                    continue
-#                                iou = utils.iou(pred, t[1:])
-##                                iou2 = utils.bbox_iou(pred,t[1:], False)
-##                                iou3 = utils.bbox_ious(pred, t[1:], False)
-#                                if iou > best_iou:
-#                                    best_iou = iou
-#                                    the_ious[b][a][j][i] = best_iou
-#                            if best_iou <= self.ignore_thresh:
-#                                loss_objectness[b][a][j][i] = -conf[b][a][j][i]                           
-            
-            loss_objectness = torch.zeros(batch_size, self.mask_size, lheight, lwidth)
+            yolo_boxes = self.get_yolo_boxes(x, y, width, height, self.masked_anchors)
+            targets = targets.view(batch_size, -1, 5)                        
+ 
+            loss_objectness = torch.zeros(batch_size, self.mask_size, lheight, lwidth).cuda()
             for b in range(batch_size):
                 preds = yolo_boxes[b]
                 best_ious = torch.zeros(batch_size, self.mask_size, lheight, lwidth).cuda()
@@ -305,25 +283,110 @@ class YoloLayer2(nn.Module):
                         continue
                     ious = utils.bbox_ious(preds.permute(3,0,1,2), t[1:], False)
                     best_ious = torch.max(best_ious, ious)
-                loss_objectness[b] = -conf[b]
-#            ious = utils.bbox_ious(preds.permute(4,0,1,2,3), targets[:,1:,:].permute(1,0,2).unsqueeze(-2).unsqueeze(-2), False)
-#            best_ious = torch.max(best_ious, ious)
+                loss_objectness[b] = -conf[b] # we want loss to be 1 when a box is not with 100% confidence and 0 
             
-            tx = torch.zeros(batch_size, self.mask_size, lheight, lwidth, requires_grad=False)
-            ty = torch.zeros(batch_size, self.mask_size, lheight, lwidth, requires_grad=False)
-#            tw = torch.zeros(batch_size, self.mask_size, lheight, lwidth, requires_grad=False)
-#            th = torch.zeros(batch_size, self.mask_size, lheight, lwidth, requires_grad=False)
+            loss_x = torch.zeros(1).cuda()
+            loss_y = torch.zeros(1).cuda()
+            loss_width = torch.zeros(1).cuda()
+            loss_height = torch.zeros(1).cuda()
+            loss_cls = torch.zeros(1).cuda()
+            
+            num_truths = 0
+            for b in range(batch_size):
+                for t in targets[b]:
+                    if t.sum() == 0:
+                        continue
+                    num_truths += 1
+                    
+                    gt_i = int(t[1] * lwidth)
+                    gt_j = int(t[2] * lheight)
+                    
+                    truth = torch.tensor([0, 0, t[3], t[4]]).cuda()
+                    best_anchor = -1
+                    best_iou = 0
+                    for anc in range(len(self.anchors)//2):
+                        anchor_box = torch.tensor([0,0,
+                                                   self.anchors[2*anc]/self.net_width,
+                                                   self.anchors[2*anc+1]/self.net_height]).cuda()
+                        iou = utils.bbox_ious(truth, anchor_box, False)
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_anchor = anc
+                    if best_anchor in self.masked_anchor_inds:
+                        best_anchor_norm = best_anchor % self.mask_size
+                        target_pred = yolo_boxes[b][best_anchor_norm][gt_j][gt_i]
+                        iou = utils.bbox_ious(t[1:], target_pred, False)
+                        
+                        tx = t[1]*lwidth - gt_i
+                        ty = t[2]*lheight - gt_j
+                        tw = torch.log(t[3]*self.net_width/self.anchors[2*best_anchor_norm])
+                        th = torch.log(t[4]*self.net_height/self.anchors[2*best_anchor_norm+1])
+                        scale = 2 * t[2] * t[3]
+                        
+#                        loss_x += scale * (tx - x[b][best_anchor_norm][gt_j][gt_i])
+#                        loss_y += scale * (ty - y[b][best_anchor_norm][gt_j][gt_i])
+#                        loss_width += scale * (tw - width[b][best_anchor_norm][gt_j][gt_i])
+#                        loss_height += scale * (th - height[b][best_anchor_norm][gt_j][gt_i])
+                        loss_x += scale * self.l1_loss(x[b][best_anchor_norm][gt_j][gt_i], tx)
+                        loss_y += scale * self.l1_loss(y[b][best_anchor_norm][gt_j][gt_i], ty)
+                        loss_width += scale * self.l1_loss(width[b][best_anchor_norm][gt_j][gt_i], tw)
+                        loss_height += scale * self.l1_loss(height[b][best_anchor_norm][gt_j][gt_i], th)
+                        
+                        loss_objectness[b][best_anchor_norm][gt_j][gt_i] = 1 - conf[b][best_anchor_norm][gt_j][gt_i]
+                        
+                        one_hot = torch.zeros(self.num_classes).cuda()
+                        one_hot[int(t[0])] = 1.
+                        for c in range(self.num_classes):
+                            loss_cls += self.cls_loss(pred_cls[b][best_anchor_norm][gt_j][gt_i][c], one_hot[c])
+                 
+            print("Loss x {}, loss y {}, loss w {}, loss h {}, loss_cls {}".format(loss_x/num_truths, loss_y/num_truths, loss_width/num_truths, loss_height/num_truths, loss_cls))
+            return torch.sum(-loss_objectness) + loss_x/num_truths + loss_y/num_truths + loss_width/num_truths + loss_height/num_truths + loss_cls
+        else:
+            yolo_boxes = self.get_yolo_boxes(x, y, width, height, self.masked_anchors)
+            
+            output = torch.cat(
+                    (
+                            yolo_boxes.view(batch_size, -1, 4),
+                            conf.view(batch_size, -1, 1),
+                            pred_cls.view(batch_size, -1, self.num_classes),
+                    ),
+                    -1,
+                    )
+            return output
+            
+#            FloatTensor = torch.cuda.FloatTensor if x.is_cuda else torch.FloatTensor
+#            LongTensor = torch.cuda.LongTensor if x.is_cuda else torch.LongTensor
 #            
-#            for b in range(batch_size):
-#                for t in range(targets.shape[0]):
-#                    # Convert to position relative to box
-#                    gx = targets[b, t, 1] * lwidth
-#                    gy = targets[b, t, 2] * lheight
-#                    gw = targets[b, t, 3] * lwidth
-#                    gh = targets[b, t, 4] * lheight
-#                    
-#                    gi = int(gx)
-#                    gj = int(gy)
+#            stride_w = self.net_width/lwidth
+#            stride_h = self.net_height/lheight
+#            
+#            # Calculate offsets for each grid
+#            grid_x = torch.linspace(0, lwidth-1, lwidth).repeat(lwidth, 1).repeat(
+#                        batch_size * self.mask_size, 1, 1).view(x.shape).type(FloatTensor)
+#            grid_y = torch.linspace(0, lheight-1, lheight).repeat(lheight, 1).t().repeat(
+#                        batch_size * self.mask_size, 1, 1).view(y.shape).type(FloatTensor)
+#
+#            scaled_anchors = FloatTensor([(a_w / stride_w, a_h / stride_h) for a_w, a_h in np.array(self.masked_anchors).reshape(-1,2)])
+#
+#            # Calculate anchor w, h
+#            anchor_w = FloatTensor(scaled_anchors).index_select(1, LongTensor([0]))
+#            anchor_h = FloatTensor(scaled_anchors).index_select(1, LongTensor([1]))
+#            anchor_w = anchor_w.repeat(batch_size, 1).repeat(1, 1, lheight * lwidth).view(width.shape)
+#            anchor_h = anchor_h.repeat(batch_size, 1).repeat(1, 1, lheight * lwidth).view(height.shape)
+#            # Add offset and scale with anchors
+#            pred_boxes = FloatTensor(prediction[..., :4].shape)
+#            pred_boxes[..., 0] = x.data + grid_x
+#            pred_boxes[..., 1] = y.data + grid_y
+#            pred_boxes[..., 2] = torch.exp(width.data) * anchor_w
+#            pred_boxes[..., 3] = torch.exp(height.data) * anchor_h
+#            # Results
+#            _scale = torch.Tensor([stride_w, stride_h] * 2).type(FloatTensor)
+#            output = torch.cat((pred_boxes.view(batch_size, -1, 4) * _scale,
+#                                conf.view(batch_size, -1, 1), pred_cls.view(batch_size, -1, self.num_classes)), -1)
+#            
+#            return output.data
+            
+            
             
     def get_yolo_box(self, i, j, x, y, width, height, grid_width, grid_height, net_width, net_height, anchor_x, anchor_y):
         yolo_x = (i + x)/grid_width
@@ -332,8 +395,10 @@ class YoloLayer2(nn.Module):
         yolo_height = torch.exp(height) * anchor_y / net_height
         return torch.tensor([yolo_x, yolo_y, yolo_width, yolo_height]).cuda()
     
-    def get_yolo_boxes(self, x, y, width, height, net_width, net_height, mask_anchors):
+    def get_yolo_boxes(self, x, y, width, height, masked_anchors):
         assert x.shape == y.shape == width.shape == height.shape
+        net_width = self.net_width
+        net_height = self.net_height
         
         batches, num_anchors, grid_w, grid_h = x.shape
         boxes = []
@@ -343,7 +408,7 @@ class YoloLayer2(nn.Module):
                     for i in range(grid_w):
                         new_x = (i + x[b][a][j][i])/grid_w
                         new_y = (j + y[b][a][j][i])/grid_h
-                        new_width = torch.exp(width[b][a][j][i]) * mask_anchors[a] / net_width
-                        new_height = torch.exp(height[b][a][j][i]) * mask_anchors[a+1] / net_height
+                        new_width = torch.exp(width[b][a][j][i]) * masked_anchors[a] / net_width
+                        new_height = torch.exp(height[b][a][j][i]) * masked_anchors[a+1] / net_height
                         boxes.append([new_x, new_y, new_width, new_height])
         return torch.tensor(boxes).view(batches, num_anchors, grid_w, grid_h, 4).cuda()
