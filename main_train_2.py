@@ -70,6 +70,9 @@ def print_args(args, use_cuda):
     print('Will use cuda: {}'.format(use_cuda))
     print('##############')
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps):
     model.eval()
 
@@ -132,8 +135,8 @@ def adjust_learning_rate(optimizer, batch, learning_rate, steps, scales, batch_s
         param_group['lr'] = lr/batch_size
     return lr
 
-def train(epoch, model, criterion, bce_loss, l1_loss, optimizer, train_loader,
-          use_cuda, processed_batches, args):
+def train(epoch, model, yolo_inds, criterion, bce_loss, l1_loss, ce_loss,
+          optimizer, train_loader, use_cuda, processed_batches, args):
     lr = adjust_learning_rate(optimizer,
                               processed_batches,
                               args.lr,
@@ -144,8 +147,11 @@ def train(epoch, model, criterion, bce_loss, l1_loss, optimizer, train_loader,
     print('epoch %d, processed %d samples, lr %f' % (epoch,
                                                      epoch * len(train_loader.dataset),
                                                      lr))
-    model.train()
-    yolo_inds = model.yolo_inds
+    try:
+        info = model.module
+    except:
+        info = model  
+    model.train()        
     for batch_idx, (data, target) in enumerate(train_loader):
         t0 = time.time()
         adjust_learning_rate(optimizer,
@@ -166,21 +172,22 @@ def train(epoch, model, criterion, bce_loss, l1_loss, optimizer, train_loader,
         loss = 0
         for i, output in enumerate(out):
             loss += criterion(output, target,
-                             model.detector[yolo_inds[i]].yolo.anchors,
-                             model.detector[yolo_inds[i]].yolo.mask,
+                             info.detector[yolo_inds[i]].yolo.anchors,
+                             info.detector[yolo_inds[i]].yolo.mask,
                              20,
-                             model.detector[yolo_inds[i]].yolo.layer_height,
-                             model.detector[yolo_inds[i]].yolo.layer_width,
+                             info.detector[yolo_inds[i]].yolo.layer_height,
+                             info.detector[yolo_inds[i]].yolo.layer_width,
                              416, 416,
-                             model.detector[yolo_inds[i]].yolo.ignore_thresh,
-                             bce_loss, l1_loss)
+                             info.detector[yolo_inds[i]].yolo.ignore_thresh,
+                             bce_loss, l1_loss, ce_loss)
 
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        print("Epoch {}, loss {}, time {:.3f}".format(epoch, loss, t1-t0))
+        print("Epoch {}, Seen {}, loss {}, time {:.3f}".format(epoch, 
+              processed_batches*args.batch_size, loss, t1-t0))
 
     if (epoch+1) % args.eval_freq == 0:
         print('save weights to %s/%06d.weights' % (args.output_dir, epoch+1))
@@ -210,13 +217,11 @@ def main():
         torch.cuda.manual_seed(seed)
 
     model = Yolov3Detector(cfgfile, (416, 416))
-    def count_parameters(model):
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
     print(model)
     print(count_parameters(model))
     model.load_weights(weightfile)
-#    yolo_inds = model.yolo_inds
-
+    yolo_inds = model.yolo_inds
 
 #    x = torch.rand((1,3,416,416))
 #    out = model(x)
@@ -225,6 +230,7 @@ def main():
     l1_loss = nn.L1Loss(size_average=True, reduce=True)
 #    bboxcriterion = Yolov3BboxCriterion
     bce_loss = nn.BCEWithLogitsLoss(size_average=True, reduce=True)
+    ce_loss = nn.CrossEntropyLoss(size_average=True, reduce=True)
 #    classcriterion = Yolov3ClassCriterion
 #    objectnesscriterion = Yolov3ObjectnessCriterion
     objclasscriterion = Yolov3ObjectnessClassBBoxCriterion
@@ -297,8 +303,10 @@ def main():
         #test(0, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps)
     else:
         for epoch in range(int(max_epochs)):
-            processed_batches = train(epoch, model, objclasscriterion,
-                                      bce_loss, l1_loss, optimizer,
+            processed_batches = train(epoch, model, yolo_inds,
+                                      objclasscriterion, 
+                                      bce_loss, l1_loss, ce_loss,
+                                      optimizer,
                                       train_loader, use_cuda,
                                       processed_batches, args)
             #test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps)

@@ -117,7 +117,7 @@ class EmptyLayer(nn.Module):
 
     def forward(self, x):
         return x
-
+#import time
 class Yolov3Layer(nn.Module):
     def __init__(self, anchors, mask, classes, net_input_size, jitter, ignore_thresh,
                  truth_thresh, random_size):
@@ -134,12 +134,12 @@ class Yolov3Layer(nn.Module):
     # in order to move the loss criterion out of the forward function
     def forward(self, output):
 
-        num_batches = output.size(0)
+        batch_size = output.size(0)
         self.layer_height = output.size(2)
         self.layer_width = output.size(3)
         num_anchors = len(self.mask)
 
-        prediction = output.view(num_batches, num_anchors, self.bbox_attributes,
+        prediction = output.view(batch_size, num_anchors, self.bbox_attributes,
                                  self.layer_height, self.layer_width
                                  ).permute(0, 1, 3, 4, 2).contiguous()
         # Get outputs
@@ -151,20 +151,56 @@ class Yolov3Layer(nn.Module):
         pred_cls = torch.sigmoid(prediction[..., 5:]) # Cls pred.
         #pred_conf = prediction[..., 4]  # Conf
         #pred_cls = prediction[..., 5:] # Cls pred.
-
-        yolo_boxes = self.get_yolo_boxes(x, y, width, height, self.layer_anchors).cuda()
-
+#        t1 = time.time()
+        yolo_boxes = self.get_yolo_boxes_fast(x,y,width,height, self.layer_anchors)
+#        t2 = time.time()
+#        yolo_boxes = self.get_yolo_boxes(x, y, width, height, self.layer_anchors).cuda()        
+#        t3 = time.time()
+#        print('{:.3f} to make {} yolo boxes'.format(t2-t1, yolo_boxes.numel()//4))
+#        print('{:.3f} to make {} fast yolo boxes'.format(t3-t2, yolo_boxes_2.numel()//4))
         output = torch.cat(
                 (
-                        yolo_boxes.view(num_batches, -1, 4),
-                        pred_conf.view(num_batches, -1, 1),
-                        pred_cls.view(num_batches, -1, self.classes),
+                        yolo_boxes.view(batch_size, -1, 4),
+                        pred_conf.view(batch_size, -1, 1),
+                        pred_cls.view(batch_size, -1, self.classes),
                 ),
                 -1,
                 )
 
         return output
 
+    def get_yolo_boxes_fast(self, x, y, width, height, masked_anchors):
+        assert x.shape == y.shape == width.shape == height.shape
+        net_width = self.net_input_size[1]
+        net_height = self.net_input_size[0]
+        batches, num_anchors, grid_w, grid_h = x.shape
+
+        grid_ij = torch.linspace(0, grid_w-1, grid_w).repeat(batches,num_anchors,grid_h,1).cuda()
+        grid_w_re = torch.tensor(grid_w/1.0).repeat(batches, num_anchors, grid_h, grid_w).cuda()
+        grid_h_re = torch.tensor(grid_h/1.0).repeat(batches, num_anchors, grid_h, grid_w).cuda()
+        net_width_re = torch.tensor(net_width/1.0).repeat(batches, num_anchors, grid_h, grid_w).cuda()
+        net_height_re = torch.tensor(net_height/1.0).repeat(batches, num_anchors, grid_h, grid_w).cuda()
+        masked_anchors_w = torch.tensor(masked_anchors[:,0]).type(torch.float).cuda()
+        masked_anchors_w = masked_anchors_w.repeat(grid_w, 1)
+        masked_anchors_w = masked_anchors_w.repeat(grid_h, 1, 1)
+        masked_anchors_w = masked_anchors_w.repeat(batches, 1, 1, 1)
+        masked_anchors_w = masked_anchors_w.permute(0,3,1,2)
+        masked_anchors_h = torch.tensor(masked_anchors[:,1]).type(torch.float).cuda()
+        masked_anchors_h = masked_anchors_h.repeat(grid_w, 1)
+        masked_anchors_h = masked_anchors_h.repeat(grid_h, 1, 1)
+        masked_anchors_h = masked_anchors_h.repeat(batches, 1, 1, 1)
+        masked_anchors_h = masked_anchors_h.permute(0,3,1,2)
+        new_x = (grid_ij + x)/grid_w_re
+        new_y = (grid_ij + y)/grid_h_re
+        new_width = torch.exp(width) * masked_anchors_w / net_width_re
+        new_height = torch.exp(height) * masked_anchors_h / net_height_re
+        
+        return torch.cat([new_x.unsqueeze(-1),
+                          new_y.unsqueeze(-1),
+                          new_width.unsqueeze(-1),
+                          new_height.unsqueeze(-1)],
+                          -1)
+        
     def get_yolo_boxes(self, x, y, width, height, masked_anchors):
         assert x.shape == y.shape == width.shape == height.shape
         net_width = self.net_input_size[1]
@@ -185,7 +221,7 @@ class Yolov3Layer(nn.Module):
 
 def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, num_classes,
                                    layer_height, layer_width, net_height, net_width,
-                                   ignore_thresh, bce_loss, l1_loss):
+                                   ignore_thresh, bce_loss, l1_loss, ce_loss):
     batch_size = inputs.size(0)
     inputs = inputs.view(batch_size, len(anchor_mask), layer_height, layer_width, -1)
     targets = targets.view(batch_size, -1, 5)
@@ -244,11 +280,12 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
                 ts[b][best_anchor_norm][gt_j][gt_i] = 2 * t[2] * t[3]
 
                 target_pred = inputs[b][best_anchor_norm][gt_j][gt_i][5:]
-                one_hot = torch.zeros(num_classes).cuda()
-                one_hot[int(t[0])] = 1.
-                for c in range(num_classes):
-                    temp_loss = bce_loss(target_pred[c], one_hot[c])
-                    loss_class += temp_loss.cuda()
+#                one_hot = torch.zeros(num_classes).cuda()
+#                one_hot[int(t[0])] = 1.
+#                for c in range(num_classes):
+#                    temp_loss = bce_loss(target_pred[c], one_hot[c])
+#                    loss_class += temp_loss.cuda()
+                loss_class += ce_loss(target_pred.unsqueeze(0), t[0].unsqueeze(0).type(torch.long))
 
     loss_x = torch.zeros(1).cuda()
     loss_y = torch.zeros(1).cuda()
@@ -261,7 +298,7 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
     loss_y = torch.sum(ts * l1_loss(inputs[...,1] * best_iou_mask, ty))
     loss_width = torch.sum(ts * l1_loss(inputs[...,2] * best_iou_mask, tw))
     loss_height = torch.sum(ts * l1_loss(inputs[...,3] * best_iou_mask, th))
-    loss_class = torch.sum(loss_class)
+    loss_class = torch.sum(loss_class) / num_truths
 #    for c in range(num_classes):
 #        temp_loss = bce_loss(inputs[...,5+c] * best_iou_mask, targets[...,0]==c)
 #        loss_class += temp_loss
@@ -269,6 +306,7 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
     loss_objectness = bce_loss(inputs[...,4]*(1-ignore_mask), torch.zeros_like(ignore_mask)).cuda() \
                     + bce_loss(inputs[...,4]*best_iou_mask, torch.ones_like(ignore_mask)).cuda()
     loss_objectness = torch.sum(loss_objectness)
+    print("losses: x {:.3f}, y {:.3f}, w {:.3f}, h {:.3f}, class {:.3f}, obj {:.3f}".format(loss_x, loss_y, loss_width, loss_height, loss_class, loss_objectness))
     return loss_x + loss_y + loss_width + loss_height + loss_class + loss_objectness
 
 
