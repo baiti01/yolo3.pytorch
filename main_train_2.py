@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument('testlist', type=str)
     parser.add_argument('classnames', type=str)
     parser.add_argument('--output_dir', type=str, default=r'backup/')
-    parser.add_argument('--batch_size', type=int, default=2)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--decay', type=float, default=0.0005)
@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument('--max_batches', type=int, default=50200)
     parser.add_argument('--scales', nargs='+', type=float, default=[0.1, 0.1])
     parser.add_argument('--gpus', nargs='+', type=int, default=[0])
-    parser.add_argument('--num_workers', type=int, default=10)
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--eval_freq', type=int, default=2)
     args = parser.parse_args()
     return args
@@ -150,8 +150,8 @@ def train(epoch, model, yolo_inds, criterion, bce_loss, l1_loss, ce_loss,
     try:
         info = model.module
     except:
-        info = model  
-    model.train()        
+        info = model
+    model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         t0 = time.time()
         adjust_learning_rate(optimizer,
@@ -186,13 +186,12 @@ def train(epoch, model, yolo_inds, criterion, bce_loss, l1_loss, ce_loss,
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        print("Epoch {}, Seen {}, loss {}, time {:.3f}".format(epoch, 
-              processed_batches*args.batch_size, loss, t1-t0))
+        #print("Epoch {}, Seen {}, loss {}, time {:.3f}".format(epoch, processed_batches*args.batch_size, loss, t1-t0))
 
-    if (epoch+1) % args.eval_freq == 0:
-        print('save weights to %s/%06d.weights' % (args.output_dir, epoch+1))
-        model.seen = (epoch + 1) * len(train_loader.dataset)
-        model.save_weights('%s/%06d.weights' % (args.output_dir, epoch+1))
+#    if (epoch+1) % args.eval_freq == 0:
+#        print('save weights to %s/%06d.weights' % (args.output_dir, epoch+1))
+#        model.seen = (epoch + 1) * len(train_loader.dataset)
+#        model.save_weights('%s/%06d.weights' % (args.output_dir, epoch+1))
 
     return processed_batches
 
@@ -227,10 +226,11 @@ def main():
 #    out = model(x)
 #    targets = torch.tensor([[14, 0.509915014164306, 0.51, 0.9745042492917847, 0.972],[11., 0.34419263456090654, 0.611, 0.4164305949008499, 0.262]]).unsqueeze(0)
 
-    l1_loss = nn.L1Loss(size_average=True, reduce=True)
+    l1_loss = nn.L1Loss(size_average=False, reduce=False)
 #    bboxcriterion = Yolov3BboxCriterion
-    bce_loss = nn.BCEWithLogitsLoss(size_average=True, reduce=True)
-    ce_loss = nn.CrossEntropyLoss(size_average=True, reduce=True)
+    bce_loss = nn.BCELoss(size_average=False, reduce=False)
+#    bce_loss = nn.BCEWithLogitsLoss(size_average=False, reduce=False)
+    ce_loss = nn.CrossEntropyLoss(size_average=False, reduce=False)
 #    classcriterion = Yolov3ClassCriterion
 #    objectnesscriterion = Yolov3ObjectnessCriterion
     objclasscriterion = Yolov3ObjectnessClassBBoxCriterion
@@ -304,7 +304,7 @@ def main():
     else:
         for epoch in range(int(max_epochs)):
             processed_batches = train(epoch, model, yolo_inds,
-                                      objclasscriterion, 
+                                      objclasscriterion,
                                       bce_loss, l1_loss, ce_loss,
                                       optimizer,
                                       train_loader, use_cuda,
