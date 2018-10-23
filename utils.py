@@ -34,7 +34,7 @@ def intersection(box1, box2):
     if w < 0 or h < 0:
         return 0
     return w*h
-    
+
 def union(box1, box2):
     return box1[2]*box1[3] + box2[2]*box2[3] - intersection(box1, box2)
 
@@ -173,7 +173,7 @@ def non_max_suppression(prediction, num_classes, conf_thres=0.5, nms_thres=0.4):
                 if len(detections_class) == 1:
                     break
                 # Get the IOUs for all boxes with lower confidence
-                ious = bbox_iou(max_detections[-1], detections_class[1:])
+                ious = bbox_ious(max_detections[-1][:,:4].permute(1,0), detections_class[1:][:,:4].permute(1,0), True)
                 # Remove detections with IoU >= NMS threshold
                 detections_class = detections_class[1:][ious < nms_thres]
 
@@ -358,7 +358,7 @@ def read_truths(lab_path):
         return np.array([])
     if os.path.getsize(lab_path):
         truths = np.loadtxt(lab_path)
-        truths = truths.reshape(truths.size/5, 5) # to avoid single truth problem
+        truths = truths.reshape(truths.size//5, 5) # to avoid single truth problem
         return truths
     else:
         return np.array([])

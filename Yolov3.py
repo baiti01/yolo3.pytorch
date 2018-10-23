@@ -289,7 +289,7 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
     loss_width = torch.zeros(1).cuda()
     loss_height = torch.zeros(1).cuda()
     #loss_class = torch.zeros(1)
-    loss_objectness = torch.zeros(1).cuda()
+    #loss_objectness = torch.zeros(1).cuda()
 
     loss_x = ts * l1_loss(inputs[...,0] * best_iou_mask, tx)
     loss_y = ts * l1_loss(inputs[...,1] * best_iou_mask, ty)
@@ -320,7 +320,7 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
     loss_height = torch.sum(torch.pow(loss_height,2))/nz_height
     loss_objectness_wrong = torch.sum(torch.pow(loss_objectness_wrong,2))/nz_obj_wr
     loss_objectness_right = torch.sum(torch.pow(loss_objectness_right,2))/nz_obj_ri
-    print("losses: x {:.3f}, y {:.3f}, w {:.3f}, h {:.3f}, class {:.3f}, obj no {:.3f}, obj yes {:.3f}".format(loss_x, loss_y, loss_width, loss_height, loss_class, loss_objectness_wrong, loss_objectness_right))
+    print("x {:.3f}, y {:.3f}, w {:.3f}, h {:.3f}, class {:.3f}, obj no {:.3f}, obj yes {:.3f}".format(loss_x, loss_y, loss_width, loss_height, loss_class, loss_objectness_wrong, loss_objectness_right))
     return loss_x + loss_y + loss_width + loss_height + loss_class + loss_objectness_wrong + loss_objectness_right
 
 
@@ -513,7 +513,7 @@ class Yolov3Detector(nn.Module):
             if module_name['type'] == 'net':
                 continue
             elif module_name['type'] == 'convolutional':
-                batch_normalize = int(module_name['batch_normalize'])
+                batch_normalize = int(module_name['batch_normalize']) if 'batch_normalize' in module_name.keys() else 0
                 if batch_normalize:
                     start = load_conv_bn(buf, start, nnmodule.conv, nnmodule.batch_norm)
                 else:
@@ -529,14 +529,22 @@ class Yolov3Detector(nn.Module):
         header.numpy().tofile(fp)
 
         ind = -1
-        for blockId in range(1, cutoff+1):
+        for blockId in range(0, cutoff+1):
             ind = ind + 1
-            block = self.modules_list[blockId]
-            if block['type'] == 'convolutional':
+            module_name = self.modules_list[blockId]
+            if module_name['type'] == 'convolutional':
                 nnmodule = self.detector[ind]
-                batch_normalize = int(block['batch_normalize'])
+                batch_normalize = int(module_name['batch_normalize']) if 'batch_normalize' in module_name.keys() else 0
                 if batch_normalize:
                     save_conv_bn(fp, nnmodule.conv, nnmodule.batch_norm)
                 else:
                     save_conv(fp, nnmodule.conv)
         fp.close()
+
+
+#if __name__=="__main__":
+#
+#    model = Yolov3Detector(r"cfg\yolov3.cfg", (416, 416))
+#    model.load_weights(r"pretrained_weights/yolov3.weights")
+#    model.seen = 678
+#    model.save_weights("omg_wow.weights")

@@ -8,6 +8,7 @@ Created on Thu Oct 18 16:48:47 2018
 import os
 import argparse
 import time
+import shutil
 
 import torch
 import torch.nn as nn
@@ -16,6 +17,7 @@ from torchvision import transforms
 
 from Yolov3 import Yolov3Detector, Yolov3ObjectnessClassBBoxCriterion
 
+from utils import non_max_suppression, bbox_ious, load_class_names
 import dataset
 
 def print_and_save(text, path):
@@ -42,43 +44,51 @@ def parse_args():
     parser.add_argument('--gpus', nargs='+', type=int, default=[0])
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--eval_freq', type=int, default=2)
+    parser.add_argument('--logging', type=bool, default=True)
     args = parser.parse_args()
     return args
 
 def print_args(args, use_cuda):
-    print('##############')
-    print('### File things ###')
-    print('Network file: {}'.format(args.cfg))
-    print('Pretrained weights: {}'.format(args.weights))
-    print('Train dataset: {}'.format(args.trainlist))
-    print('Test dataset: {}'.format(args.testlist))
-    print('Class names: {}'.format(args.classnames))
-    print('### Training things ###')
-    print('Batch size: {}'.format(args.batch_size))
-    print('Learning rate: {}'.format(args.lr))
-    print('Momentum: {}'.format(args.momentum))
-    print('Decay: {}'.format(args.decay))
-    print('Learning rate steps: {}'.format(args.steps))
-    print('Learning rate scales: {}'.format(args.scales))
-    print('Max batches: {}'.format(args.max_batches))
-    print('### Saving things ###')
-    print('Output dir: {}'.format(args.output_dir))
-    print('Eval and save frequency: {}'.format(args.eval_freq))
-    print('### Hardware things ###')
-    print('Gpus: {}'.format(args.gpus))
-    print('Data load workers: {}'.format(args.num_workers))
-    print('Will use cuda: {}'.format(use_cuda))
-    print('##############')
+    print_and_save('##############', log_file)
+    print_and_save('### File things ###', log_file)
+    print_and_save('Network file: {}'.format(args.cfg), log_file)
+    print_and_save('Pretrained weights: {}'.format(args.weights), log_file)
+    print_and_save('Train dataset: {}'.format(args.trainlist), log_file)
+    print_and_save('Test dataset: {}'.format(args.testlist), log_file)
+    print_and_save('Class names: {}'.format(args.classnames), log_file)
+    print_and_save('### Training things ###', log_file)
+    print_and_save('Batch size: {}'.format(args.batch_size), log_file)
+    print_and_save('Learning rate: {}'.format(args.lr), log_file)
+    print_and_save('Momentum: {}'.format(args.momentum), log_file)
+    print_and_save('Decay: {}'.format(args.decay), log_file)
+    print_and_save('Learning rate steps: {}'.format(args.steps), log_file)
+    print_and_save('Learning rate scales: {}'.format(args.scales), log_file)
+    print_and_save('Max batches: {}'.format(args.max_batches), log_file)
+    print_and_save('### Saving things ###', log_file)
+    print_and_save('Output dir: {}'.format(args.output_dir), log_file)
+    print_and_save('Eval and save frequency: {}'.format(args.eval_freq), log_file)
+    print_and_save('### Hardware things ###', log_file)
+    print_and_save('Gpus: {}'.format(args.gpus), log_file)
+    print_and_save('Data load workers: {}'.format(args.num_workers), log_file)
+    print_and_save('Will use cuda: {}'.format(use_cuda), log_file)
+    print_and_save('##############', log_file)
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps):
+def truths_length(truths):
+    for i in range(50):
+        if truths[i][1] == 0:
+            return i
+
+def test(epoch, model, modelInfo, test_loader, use_cuda, prev_f=0.0):
+    # Test parameters
+    conf_thresh   = 0.25
+    nms_thresh    = 0.4
+    iou_thresh    = 0.5
+    eps           = 1e-5
     model.eval()
 
-    num_classes = model.detector[-1].num_classes
-    anchors     = model.detector[-1].anchors
-    num_anchors = model.models[-1].num_anchors
     total       = 0.0
     proposals   = 0.0
     correct     = 0.0
@@ -89,36 +99,38 @@ def test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thres
         if use_cuda:
             data = data.cuda()
         output = model(data)
+        output = torch.cat(output, 1)
+        boxes = non_max_suppression(output, modelInfo['num_classes'], conf_thresh, nms_thresh)
 
-        for i in range(output.size(0)):
-            #boxes = all_boxes[i]
-            boxes = output[i]
-            boxes = utils.nms(boxes, nms_thresh)
-            truths = target[i].view(-1, 5)
+        for b in range(output.size(0)):
+            truths = target[b].view(-1, 5)
             num_gts = truths_length(truths)
 
             total = total + num_gts
 
-            for i in range(len(boxes)):
-                if boxes[i][4] > conf_thresh:
+            # this can be done faster. just count the boxes without conf_thresh check
+            for i in range(len(boxes[b])):
+                if boxes[b][i][4] > conf_thresh:
                     proposals = proposals+1
 
             for i in range(num_gts):
-                box_gt = [truths[i][1], truths[i][2], truths[i][3], truths[i][4], 1.0, 1.0, truths[i][0]]
+                box_gt = torch.tensor([truths[i][1]-truths[i][3]/2, truths[i][2]-truths[i][4]/2, truths[i][1]+truths[i][3]/2, truths[i][2]+truths[i][4]/2]).cuda()
                 best_iou = 0
                 best_j = -1
-                for j in range(len(boxes)):
-                    iou = utils.bbox_iou(box_gt, boxes[j], x1y1x2y2=False)
+                for j in range(len(boxes[b])):
+                    iou = bbox_ious(box_gt, boxes[b][j][:4], x1y1x2y2=True)
                     if iou > best_iou:
                         best_j = j
                         best_iou = iou
-                if best_iou > iou_thresh and boxes[best_j][6] == box_gt[6]:
+                if best_iou > iou_thresh and boxes[b][best_j][6] == truths[i][0].cuda():
                     correct = correct+1
 
     precision = 1.0*correct/(proposals+eps)
     recall = 1.0*correct/(total+eps)
     fscore = 2.0*precision*recall/(precision+recall+eps)
-    print("precision: %f, recall: %f, fscore: %f" % (precision, recall, fscore))
+    print_and_save("precision: {:.3f}, recall: {:.3f}, fscore: {:.3f}".format(precision, recall, fscore), log_file)
+
+    return fscore > prev_f
 
 def adjust_learning_rate(optimizer, batch, learning_rate, steps, scales, batch_size):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -135,7 +147,7 @@ def adjust_learning_rate(optimizer, batch, learning_rate, steps, scales, batch_s
         param_group['lr'] = lr/batch_size
     return lr
 
-def train(epoch, model, yolo_inds, criterion, bce_loss, l1_loss, ce_loss,
+def train(epoch, model, modelInfo, criterion, bce_loss, l1_loss, ce_loss,
           optimizer, train_loader, use_cuda, processed_batches, args):
     lr = adjust_learning_rate(optimizer,
                               processed_batches,
@@ -144,13 +156,9 @@ def train(epoch, model, yolo_inds, criterion, bce_loss, l1_loss, ce_loss,
                               args.scales,
                               args.batch_size)
 
-    print('epoch %d, processed %d samples, lr %f' % (epoch,
-                                                     epoch * len(train_loader.dataset),
-                                                     lr))
-    try:
-        info = model.module
-    except:
-        info = model
+    print_and_save('*****', log_file)
+    print_and_save('epoch {}, processed {} samples, lr {:.4f}'.format(epoch,
+                   epoch * len(train_loader.dataset), lr), log_file)
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         t0 = time.time()
@@ -172,42 +180,37 @@ def train(epoch, model, yolo_inds, criterion, bce_loss, l1_loss, ce_loss,
         loss = 0
         for i, output in enumerate(out):
             loss += criterion(output, target,
-                             info.detector[yolo_inds[i]].yolo.anchors,
-                             info.detector[yolo_inds[i]].yolo.mask,
-                             20,
-                             info.detector[yolo_inds[i]].yolo.layer_height,
-                             info.detector[yolo_inds[i]].yolo.layer_width,
-                             416, 416,
-                             info.detector[yolo_inds[i]].yolo.ignore_thresh,
-                             bce_loss, l1_loss, ce_loss)
-
+                              modelInfo['anchors'][i], modelInfo['masks'][i],
+                              modelInfo['num_classes'],
+                              modelInfo['sizes'][i], modelInfo['sizes'][i],
+                              modelInfo['input_shape'][0],
+                              modelInfo['input_shape'][1],
+                              modelInfo['ignore_thresh'][i],
+                              bce_loss, l1_loss, ce_loss)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        #print("Epoch {}, Seen {}, loss {}, time {:.3f}".format(epoch, processed_batches*args.batch_size, loss, t1-t0))
-
-#    if (epoch+1) % args.eval_freq == 0:
-#        print('save weights to %s/%06d.weights' % (args.output_dir, epoch+1))
-#        model.seen = (epoch + 1) * len(train_loader.dataset)
-#        model.save_weights('%s/%06d.weights' % (args.output_dir, epoch+1))
+        print_and_save("Seen {}, loss {}, batch time {:.3f} s".format(processed_batches*args.batch_size, loss, t1-t0), log_file)
+        #print_and_save('', log_file)
 
     return processed_batches
 
 def main():
-
+    global log_file
     args = parse_args()
     cfgfile       = args.cfg
     weightfile    = args.weights
+    classnames    = load_class_names(args.classnames)
 
     use_cuda = torch.cuda.is_available()
     cudnn.benchmark = True
 
-    log_file = "{}_log.txt".format('train')
-    print_args(args, use_cuda)
     if not os.path.exists(args.output_dir):
         os.mkdir(args.output_dir)
+    log_file = os.path.join(args.output_dir,"{}_log.txt".format('train')) if args.logging else None
+    print_args(args, use_cuda)
 
     ###############
     seed = int(time.time())
@@ -217,37 +220,24 @@ def main():
 
     model = Yolov3Detector(cfgfile, (416, 416))
 
-    print(model)
-    print(count_parameters(model))
+    print_and_save(model, log_file)
+    print_and_save("Trainable parameters {}".format(count_parameters(model)), log_file)
     model.load_weights(weightfile)
+    print_and_save('Loading weights from {}... Done!'.format(weightfile), log_file)
     yolo_inds = model.yolo_inds
-
-#    x = torch.rand((1,3,416,416))
-#    out = model(x)
-#    targets = torch.tensor([[14, 0.509915014164306, 0.51, 0.9745042492917847, 0.972],[11., 0.34419263456090654, 0.611, 0.4164305949008499, 0.262]]).unsqueeze(0)
+    yolo_sizes = [13,26,52]
+    yolo_anchors = [model.detector[i].yolo.anchors for i in yolo_inds]
+    yolo_masks = [model.detector[i].yolo.mask for i in yolo_inds]
+    ignore_thresh = [model.detector[i].yolo.ignore_thresh for i in yolo_inds]
+    modelInfo = {'inds':yolo_inds, 'lsizes':yolo_sizes, 'input_shape':(416,416),
+                 'anchors':yolo_anchors, 'masks':yolo_masks,
+                 'ignore_thresh': ignore_thresh,
+                 'num_classes': len(classnames)}
 
     l1_loss = nn.L1Loss(size_average=False, reduce=False)
-#    bboxcriterion = Yolov3BboxCriterion
     bce_loss = nn.BCELoss(size_average=False, reduce=False)
-#    bce_loss = nn.BCEWithLogitsLoss(size_average=False, reduce=False)
     ce_loss = nn.CrossEntropyLoss(size_average=False, reduce=False)
-#    classcriterion = Yolov3ClassCriterion
-#    objectnesscriterion = Yolov3ObjectnessCriterion
     objclasscriterion = Yolov3ObjectnessClassBBoxCriterion
-
-#    loss_bbox = bboxcriterion(out[0], targets,
-#                              model.detector[yolo_inds[0]].yolo_1.anchors,
-#                              model.detector[yolo_inds[0]].yolo_1.mask,
-#                              13, 13, 416, 416, l1_loss)
-
-#    loss_class = classcriterion(out[0], targets,
-#                                model.detector[yolo_inds[0]].yolo_1.anchors,
-#                                model.detector[yolo_inds[0]].yolo_1.mask,
-#                                20, 13, 13, 416, 416, bce_loss)
-
-#    loss_obj = objectnesscriterion(out[0], targets,
-#                                   model.detector[yolo_inds[0]].yolo_1.mask,
-#                                   3, 3)
 
      # Initiate data loaders
     train_loader = torch.utils.data.DataLoader(
@@ -261,7 +251,7 @@ def main():
                        batch_size=args.batch_size,
                        num_workers=args.num_workers),
         batch_size=args.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True)
 
@@ -300,17 +290,26 @@ def main():
     evaluate = False
     if evaluate:
         print('evaluating ...')
-        #test(0, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps)
+        test(0, model, modelInfo, test_loader, use_cuda)
     else:
+        prev_f = 0.0
         for epoch in range(int(max_epochs)):
-            processed_batches = train(epoch, model, yolo_inds,
+            processed_batches = train(epoch, model, modelInfo,
                                       objclasscriterion,
                                       bce_loss, l1_loss, ce_loss,
                                       optimizer,
                                       train_loader, use_cuda,
                                       processed_batches, args)
-            #test(epoch, model, test_loader, use_cuda, conf_thresh, nms_thresh, iou_thresh, eps)
-
+            f_score = test(epoch, model, modelInfo, test_loader, use_cuda, prev_f)
+            if (epoch+1) % args.eval_freq == 0:
+                print_and_save('Saving weights to {}/{:06d}.weights'.format(args.output_dir, epoch+1), log_file)
+                model.seen = (epoch + 1) * len(train_loader.dataset)
+                name = os.path.join(args.output_dir,'epoch_{:06d}'.format(epoch+1))
+                model.save_weights(name+'.weights')
+                if f_score > prev_f:
+                    shutil.copyfile(name+'.weights',
+                                    os.path.join(args.output_dir, 'best.weights'))
+            prev_f = f_score
 
 if __name__ == '__main__':
     main()
