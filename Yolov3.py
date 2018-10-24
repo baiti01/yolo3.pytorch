@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from utils import bbox_ious
+from utils import bbox_ious, jaccard
 from cfg import load_conv, load_conv_bn, save_conv, save_conv_bn
 
 def parse_cfgfile(cfgfile):
@@ -171,18 +171,19 @@ class Yolov3Layer(nn.Module):
 
     def get_yolo_boxes_fast(self, x, y, width, height, masked_anchors):
         assert x.shape == y.shape == width.shape == height.shape
+        device = x.device.type + ':{}'.format(x.device.index)
         net_width = self.net_input_size[1]
         net_height = self.net_input_size[0]
         batches, num_anchors, grid_w, grid_h = x.shape
 
-        grid_ij = torch.linspace(0, grid_w-1, grid_w).repeat(grid_h,1).view(1,1,grid_h, grid_w).cuda()
+        grid_ij = torch.linspace(0, grid_w-1, grid_w, dtype=torch.float).repeat(grid_h,1).view(1,1,grid_h, grid_w).cuda()
 
-        masked_anchors_w = torch.tensor(masked_anchors[:,0]).type(torch.float).cuda()
+        masked_anchors_w = torch.tensor(masked_anchors[:,0], dtype=torch.float, device=device)#.cuda()
         masked_anchors_w = masked_anchors_w.repeat(grid_w, 1)
         masked_anchors_w = masked_anchors_w.repeat(grid_h, 1, 1)
         masked_anchors_w = masked_anchors_w.repeat(batches, 1, 1, 1)
         masked_anchors_w = masked_anchors_w.permute(0,3,1,2)
-        masked_anchors_h = torch.tensor(masked_anchors[:,1]).type(torch.float).cuda()
+        masked_anchors_h = torch.tensor(masked_anchors[:,1], dtype=torch.float, device=device)#.cuda()
         masked_anchors_h = masked_anchors_h.repeat(grid_w, 1)
         masked_anchors_h = masked_anchors_h.repeat(grid_h, 1, 1)
         masked_anchors_h = masked_anchors_h.repeat(batches, 1, 1, 1)
@@ -215,23 +216,32 @@ class Yolov3Layer(nn.Module):
                         new_height = torch.exp(height[b][a][j][i]) * masked_anchors[a][1] / net_height
                         boxes.append([new_x, new_y, new_width, new_height])
         return torch.tensor(boxes).view(batches, num_anchors, grid_w, grid_h, 4)#.cuda()
-
+import time
 def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, num_classes,
                                    layer_height, layer_width, net_height, net_width,
                                    ignore_thresh, bce_loss, l1_loss, ce_loss):
+#    tinit = time.time()
+    device = inputs.device.type + ':' + str(inputs.device.index)
     batch_size = inputs.size(0)
     inputs = inputs.view(batch_size, len(anchor_mask), layer_height, layer_width, -1)
     targets = targets.view(batch_size, -1, 5)
 
-    best_iou_mask = torch.zeros(batch_size, len(anchor_mask), layer_height, layer_width).cuda()
-    ignore_mask = torch.zeros_like(best_iou_mask)
-    tx = torch.zeros_like(best_iou_mask).cuda()
-    ty = torch.zeros_like(best_iou_mask).cuda()
-    tw = torch.zeros_like(best_iou_mask).cuda()
-    th = torch.zeros_like(best_iou_mask).cuda()
-    ts = torch.zeros_like(best_iou_mask).cuda()
+    best_iou_mask = torch.zeros(batch_size, len(anchor_mask), layer_height, layer_width, device=device)#.cuda()
+    ignore_mask = torch.zeros_like(best_iou_mask, device=device)
+    tx = torch.zeros_like(best_iou_mask, device=device)#.cuda()
+    ty = torch.zeros_like(best_iou_mask, device=device)#.cuda()
+    tw = torch.zeros_like(best_iou_mask, device=device)#.cuda()
+    th = torch.zeros_like(best_iou_mask, device=device)#.cuda()
+    ts = torch.zeros_like(best_iou_mask, device=device)#.cuda()
     num_truths = 0
-    loss_class = torch.zeros(1).cuda()
+    loss_class = torch.tensor(0., dtype=torch.float)#, device=device)
+    
+#    print('t init', time.time() - tinit)
+    
+#    tiou = time.time()
+#    tious = 0
+#    tanchors = 0
+#    thot = 0
     for b in range(batch_size):
         preds = inputs[b][...,:4]
         for t in targets[b]:
@@ -240,12 +250,17 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
             num_truths += 1 # keep count of ground truth boxes over the batch
 
             # get the ious of the predictions with the current ground truth box
+#            tbb = time.time()
             pred_ious = bbox_ious(preds.permute(3,0,1,2), t[1:], False)
+#            pred_ious = jaccard(preds, t[1:])
+#            tious += time.time() - tbb
             # ignore objectness loss from boxes with decent iou with any of the
             # gt objects of the currently evaluated image
             ignore_mask[b] = torch.max(ignore_mask[b],
-                       torch.tensor(pred_ious > ignore_thresh, dtype=torch.float).cuda())
-
+                                       torch.tensor(pred_ious > ignore_thresh,
+                                                    dtype=torch.float,
+                                                    device=device))#.cuda())
+#            tanc = time.time()
             # get gt box's corresponding grid cell
             gt_i = int(t[1] * layer_width)
             gt_j = int(t[2] * layer_height)
@@ -253,18 +268,29 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
             # get gt box's corresponding anchor
             # - could be non existing if the gt could be predicted better
             # at another yolo_layer
-            truth = torch.tensor([0, 0, t[3], t[4]])#.cuda()
-            best_anchor = -1
-            best_iou = 0
-            for i, anc in enumerate(anchors):
-                anchor_box = torch.tensor([0,0,
-                                           anc[0]/net_width,
-                                           anc[1]/net_height])#.cuda()
-                iou = bbox_ious(truth, anchor_box, False)
-                if iou > best_iou:
-                    best_iou = iou
-                    best_anchor = i
+            truth = torch.tensor([0, 0, t[3], t[4]])#, device=device)#.cuda()
+#            best_anchor = -1
+#            best_iou = 0
+#            for i, anc in enumerate(anchors):
+#                anchor_box = torch.tensor([0,0,
+#                                           anc[0]/net_width,
+#                                           anc[1]/net_height])#.cuda()
+#                iou = bbox_ious(truth, anchor_box, False)
+#                if iou > best_iou:
+#                    best_iou = iou
+#                    best_anchor = i
+            anchor_box = np.array(anchors)
+            anchor_box=np.pad(anchor_box, ((0,0),(2,0)),'constant',constant_values=(0,0))
+            anchor_box[:,2] /= net_width
+            anchor_box[:,3] /= net_height
+            anchor_box = torch.tensor(anchor_box.transpose(),
+                                      dtype=torch.float)
+                                      #device=device)
+            iou = bbox_ious(truth, anchor_box, False)
+            best_anchor = torch.argmax(iou)
+#            tanchors += time.time() - tanc
             # if the gt is for the anchors of this layer calculate bbox and class loss
+#            t1h = time.time()
             if best_anchor in anchor_mask:
                 best_anchor_norm = best_anchor % len(anchor_mask)
                 # keep best box prediction for class and bbox loss
@@ -276,26 +302,32 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
                 th[b][best_anchor_norm][gt_j][gt_i] = torch.log(t[4] * net_height / anchors[best_anchor][1])
                 ts[b][best_anchor_norm][gt_j][gt_i] = 2 * t[2] * t[3]
 
-                target_pred = inputs[b][best_anchor_norm][gt_j][gt_i][5:]
-                one_hot = torch.zeros(num_classes).cuda()
+                target_pred = inputs[b][best_anchor_norm][gt_j][gt_i][5:].cpu()
+                
+                one_hot = torch.zeros(num_classes)#, device=device)#.cuda()
                 one_hot[int(t[0])] = 1.
                 for c in range(num_classes):
                     temp_loss = bce_loss(target_pred[c], one_hot[c])
-                    loss_class += temp_loss.cuda()
+                    loss_class += temp_loss
+#            thot += time.time() - t1h
+#                one_hot[int(t[0])] = 0. #maybe it's faster this way, who knows
                 #loss_class += ce_loss(target_pred.unsqueeze(0), t[0].unsqueeze(0).type(torch.long))
-
-    loss_x = torch.zeros(1).cuda()
-    loss_y = torch.zeros(1).cuda()
-    loss_width = torch.zeros(1).cuda()
-    loss_height = torch.zeros(1).cuda()
+#    print('ious', tious)
+#    print('anchor', tanchors)
+#    print('1hot', thot)
+#    print('tiou', time.time() -tiou)
+#    loss_x = torch.zeros(1).cuda()
+#    loss_y = torch.zeros(1).cuda()
+#    loss_width = torch.zeros(1).cuda()
+#    loss_height = torch.zeros(1).cuda()
     #loss_class = torch.zeros(1)
     #loss_objectness = torch.zeros(1).cuda()
-
+#    tloss = time.time()
     loss_x = ts * l1_loss(inputs[...,0] * best_iou_mask, tx)
     loss_y = ts * l1_loss(inputs[...,1] * best_iou_mask, ty)
     loss_width = ts * l1_loss(inputs[...,2] * best_iou_mask, tw)
     loss_height = ts * l1_loss(inputs[...,3] * best_iou_mask, th)
-    loss_class = torch.sum(loss_class) / num_truths
+    loss_class = torch.sum(loss_class.to(device)) / num_truths
 #    for c in range(num_classes):
 #        temp_loss = bce_loss(inputs[...,5+c] * best_iou_mask, targets[...,0]==c)
 #        loss_class += temp_loss
@@ -320,7 +352,8 @@ def Yolov3ObjectnessClassBBoxCriterion(inputs, targets, anchors, anchor_mask, nu
     loss_height = torch.sum(torch.pow(loss_height,2))/nz_height
     loss_objectness_wrong = torch.sum(torch.pow(loss_objectness_wrong,2))/nz_obj_wr
     loss_objectness_right = torch.sum(torch.pow(loss_objectness_right,2))/nz_obj_ri
-    print("x {:.3f}, y {:.3f}, w {:.3f}, h {:.3f}, class {:.3f}, obj no {:.3f}, obj yes {:.3f}".format(loss_x, loss_y, loss_width, loss_height, loss_class, loss_objectness_wrong, loss_objectness_right))
+#    print('tloss', time.time() -tloss)
+    #print("x {:.3f}, y {:.3f}, w {:.3f}, h {:.3f}, class {:.3f}, obj no {:.3f}, obj yes {:.3f}".format(loss_x, loss_y, loss_width, loss_height, loss_class, loss_objectness_wrong, loss_objectness_right))
     return loss_x + loss_y + loss_width + loss_height + loss_class + loss_objectness_wrong + loss_objectness_right
 
 

@@ -40,11 +40,12 @@ def parse_args():
     parser.add_argument('--decay', type=float, default=0.0005)
     parser.add_argument('--steps', nargs='+', type=int, default=[40000, 45000])
     parser.add_argument('--max_batches', type=int, default=50200)
+    parser.add_argument('--max_epochs', type=int, default=None)
     parser.add_argument('--scales', nargs='+', type=float, default=[0.1, 0.1])
     parser.add_argument('--gpus', nargs='+', type=int, default=[0])
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--eval_freq', type=int, default=2)
-    parser.add_argument('--logging', type=bool, default=True)
+    parser.add_argument('--logging', default=False, action='store_true')
     args = parser.parse_args()
     return args
 
@@ -63,7 +64,7 @@ def print_args(args, use_cuda):
     print_and_save('Decay: {}'.format(args.decay), log_file)
     print_and_save('Learning rate steps: {}'.format(args.steps), log_file)
     print_and_save('Learning rate scales: {}'.format(args.scales), log_file)
-    print_and_save('Max batches: {}'.format(args.max_batches), log_file)
+    print_and_save('Max batches: {}'.format(args.max_batches) if args.max_epochs is None else "Max epochs {}".format(args.max_epochs), log_file)
     print_and_save('### Saving things ###', log_file)
     print_and_save('Output dir: {}'.format(args.output_dir), log_file)
     print_and_save('Eval and save frequency: {}'.format(args.eval_freq), log_file)
@@ -92,12 +93,15 @@ def test(epoch, model, modelInfo, test_loader, use_cuda, prev_f=0.0):
     total       = 0.0
     proposals   = 0.0
     correct     = 0.0
-
+    
+    print_and_save('*****', log_file)
+    print_and_save("Evaluating @ epoch {}".format(epoch), log_file)
     for batch_idx, (data, target) in enumerate(test_loader):
 
         data = torch.tensor(data)
         if use_cuda:
             data = data.cuda()
+        print(batch_idx)
         output = model(data)
         output = torch.cat(output, 1)
         boxes = non_max_suppression(output, modelInfo['num_classes'], conf_thresh, nms_thresh)
@@ -124,6 +128,7 @@ def test(epoch, model, modelInfo, test_loader, use_cuda, prev_f=0.0):
                         best_iou = iou
                 if best_iou > iou_thresh and boxes[b][best_j][6] == truths[i][0].cuda():
                     correct = correct+1
+#        if batch_idx == 1: break
 
     precision = 1.0*correct/(proposals+eps)
     recall = 1.0*correct/(total+eps)
@@ -176,17 +181,21 @@ def train(epoch, model, modelInfo, criterion, bce_loss, l1_loss, ce_loss,
             data = data.cuda()
             target = target.cuda()
 
+#        tf = time.time()
         out = model(data)
+#        print('forward',time.time()-tf)
         loss = 0
         for i, output in enumerate(out):
+#            tc = time.time()
             loss += criterion(output, target,
                               modelInfo['anchors'][i], modelInfo['masks'][i],
                               modelInfo['num_classes'],
-                              modelInfo['sizes'][i], modelInfo['sizes'][i],
+                              modelInfo['lsizes'][i], modelInfo['lsizes'][i],
                               modelInfo['input_shape'][0],
                               modelInfo['input_shape'][1],
                               modelInfo['ignore_thresh'][i],
                               bce_loss, l1_loss, ce_loss)
+#            print("crit ",i,time.time()-tc)
 
         optimizer.zero_grad()
         loss.backward()
@@ -194,7 +203,7 @@ def train(epoch, model, modelInfo, criterion, bce_loss, l1_loss, ce_loss,
         t1 = time.time()
         print_and_save("Seen {}, loss {}, batch time {:.3f} s".format(processed_batches*args.batch_size, loss, t1-t0), log_file)
         #print_and_save('', log_file)
-
+#        if batch_idx == 5: break
     return processed_batches
 
 def main():
@@ -209,7 +218,7 @@ def main():
 
     if not os.path.exists(args.output_dir):
         os.mkdir(args.output_dir)
-    log_file = os.path.join(args.output_dir,"{}_log.txt".format('train')) if args.logging else None
+    log_file = os.path.join(args.output_dir,"{}_log.txt".format('train')) if args.logging==True else None
     print_args(args, use_cuda)
 
     ###############
@@ -255,24 +264,21 @@ def main():
         num_workers=args.num_workers,
         pin_memory=True)
 
-    max_epochs = args.max_batches * args.batch_size/len(train_loader)+1
+    max_epochs = args.max_batches * args.batch_size/len(train_loader)+1 if args.max_epochs is None else args.max_epochs
+#    print_and_save("Training for {} epochs".format(max_epochs), log_file)
+    
     test_loader = torch.utils.data.DataLoader(
         dataset.listDataset(args.testlist, shape=(416, 416),
                        shuffle=False,
                        transform=transforms.Compose([
                            transforms.ToTensor(),
                        ]), train=False),
-        batch_size=args.batch_size,
+        batch_size=len(args.gpus),
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True)
 
     processed_batches = model.seen/args.batch_size
-    if use_cuda:
-        if len(args.gpus) > 1:
-            model = torch.nn.DataParallel(model).cuda()
-        else:
-            model = model.cuda()
 
     params_dict = dict(model.named_parameters())
     params = []
@@ -287,6 +293,16 @@ def main():
                                 dampening=0,
                                 weight_decay=args.decay*args.batch_size)
 
+    if use_cuda:
+        device = 'cuda:{}'.format(args.gpus[0])
+        l1_loss = l1_loss.cuda()
+        bce_loss = bce_loss.cuda()
+        ce_loss = ce_loss.cuda()
+        if len(args.gpus) > 1:
+            model = torch.nn.DataParallel(model).cuda()
+        else:
+            model = model.to(device)
+            
     evaluate = False
     if evaluate:
         print('evaluating ...')
@@ -305,7 +321,11 @@ def main():
                 print_and_save('Saving weights to {}/{:06d}.weights'.format(args.output_dir, epoch+1), log_file)
                 model.seen = (epoch + 1) * len(train_loader.dataset)
                 name = os.path.join(args.output_dir,'epoch_{:06d}'.format(epoch+1))
-                model.save_weights(name+'.weights')
+                try:
+                    model.save_weights(name+'.weights')
+                except:
+                    print('saving data parallel')
+                    model.module.save_weights(name+'.weights')
                 if f_score > prev_f:
                     shutil.copyfile(name+'.weights',
                                     os.path.join(args.output_dir, 'best.weights'))
